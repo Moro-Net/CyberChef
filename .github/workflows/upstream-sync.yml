@@ -1,0 +1,163 @@
+name: Sync from Upstream
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:      # Allow manual trigger
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1 — Sync master from gchq/CyberChef
+  # ─────────────────────────────────────────────
+  sync:
+    name: Sync master from upstream
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      synced: ${{ steps.merge.outputs.synced }}
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: git remote add upstream https://github.com/gchq/CyberChef.git
+
+      - name: Fetch upstream master
+        run: git fetch upstream master
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          BEHIND=$(git rev-list --count HEAD..upstream/master)
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          echo "Upstream is $BEHIND commit(s) ahead."
+
+      - name: Attempt merge
+        id: merge
+        if: steps.check.outputs.behind != '0'
+        run: |
+          if git merge upstream/master --no-edit --allow-unrelated-histories; then
+            echo "synced=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "synced=false" >> "$GITHUB_OUTPUT"
+            git merge --abort
+          fi
+
+      # ── Success path: push merged master ──────
+      - name: Push synced master to fork
+        if: steps.merge.outputs.synced == 'true'
+        run: git push origin master
+
+      # ── Conflict path: open a PR ──────────────
+      - name: Create conflict-resolution branch
+        if: steps.merge.outputs.synced == 'false'
+        run: |
+          BRANCH="upstream-sync/conflict-$(date +%Y%m%d-%H%M%S)"
+          echo "CONFLICT_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          git checkout -b "$BRANCH"
+          git merge upstream/master --no-edit --allow-unrelated-histories || true
+          git add -A
+          git commit -m "chore: upstream sync – conflict markers (needs review)" || true
+          git push origin "$BRANCH"
+
+      - name: Open pull request for conflict resolution
+        if: steps.merge.outputs.synced == 'false'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              title: '⚠️ Upstream sync – merge conflicts need resolution',
+              head:  process.env.CONFLICT_BRANCH,
+              base:  'master',
+              body: [
+                '## Upstream sync conflict',
+                '',
+                'The weekly sync from `gchq/CyberChef` could not be merged automatically.',
+                'Please resolve the conflict markers in this branch and merge.',
+                '',
+                `**Upstream ref:** \`upstream/master\``,
+                `**Triggered:** ${new Date().toUTCString()}`,
+              ].join('\n'),
+            });
+
+  # ─────────────────────────────────────────────
+  # JOB 2 — Build & Deploy to GitHub Pages
+  #          (only when sync succeeded)
+  # ─────────────────────────────────────────────
+  deploy:
+    name: Build & Deploy to GitHub Pages
+    needs: sync
+    if: needs.sync.outputs.synced == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+
+    steps:
+      - name: Checkout synced master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - name: Set up Node 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: |
+          export DETECT_CHROMEDRIVER_VERSION=true
+          npm install
+          npm run setheapsize
+
+      - name: Lint
+        run: npx grunt lint
+
+      - name: Unit tests
+        run: |
+          npm test
+          npm run testnodeconsumer
+
+      - name: Production build
+        if: success()
+        run: npx grunt prod --msg=""
+
+      - name: Generate sitemap
+        run: npx grunt exec:sitemap
+
+      - name: UI tests
+        if: success()
+        run: |
+          sudo apt-get install -y xvfb
+          xvfb-run --server-args="-screen 0 1200x800x24" npx grunt testui
+
+      - name: Prepare for GitHub Pages
+        if: success()
+        run: npx grunt copy:ghPages
+
+      - name: Upload Pages artifact
+        if: success()
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./build/prod
+
+      - name: Deploy to GitHub Pages
+        if: success()
+        uses: actions/deploy-pages@v4
