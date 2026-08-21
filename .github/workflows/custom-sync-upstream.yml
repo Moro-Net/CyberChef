@@ -23,7 +23,7 @@ jobs:
       - name: Checkout fork
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.UPSTREAM_SYNC }}
 
       - name: Sync Upstream
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
