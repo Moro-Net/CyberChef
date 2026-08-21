@@ -3,22 +3,15 @@ name: Sync from Upstream
 on:
   schedule:
     - cron: '0 3 * * 1'
-  workflow_dispatch:      # Allow manual trigger
+  workflow_dispatch:
 
 jobs:
-  # ─────────────────────────────────────────────
-  # JOB 1 — Sync master from gchq/CyberChef with fork tool
-  # ─────────────────────────────────────────────
   sync:
     name: Sync with upstream
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     if: ${{ github.event.repository.fork }}
-    outputs:
-      synced: ${{ steps.check.outputs.synced }}
-
     steps:
       - name: Checkout fork
         uses: actions/checkout@v4
@@ -33,82 +26,12 @@ jobs:
           upstream_sync_branch: master
           target_sync_branch: master
           test_mode: false
+        
       - name: Check for new commits
         id: check
         if: success()
-        run: |
-          echo "Sync completed successfully"
-          echo "synced=true" >> "$GITHUB_OUTPUT"
+        run: echo "Sync completed successfully"
 
       - name: Check for Failure
         if: failure()
-        run: |
-          echo "[Error] Sync failed. This might be due to change in upstream workflow file, merge conflicts. Check logs and consider manual sync.
-          echo "synced=false" >> "$GITHUB_OUTPUT"
-
-  # ─────────────────────────────────────────────
-  # JOB 2 — Build & Deploy to GitHub Pages
-  #          (only when sync succeeded)
-  # ─────────────────────────────────────────────
-  deploy:
-    name: Build & Deploy to GitHub Pages
-    needs: sync
-    if: needs.sync.outputs.synced == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pages: write
-      id-token: write
-
-    steps:
-      - name: Checkout synced master
-        uses: actions/checkout@v4
-        with:
-          ref: master
-
-      - name: Set up Node 18
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Install dependencies
-        run: |
-          export DETECT_CHROMEDRIVER_VERSION=true
-          npm install
-          npm run setheapsize
-
-      - name: Lint
-        run: npx grunt lint
-
-      - name: Unit tests
-        run: |
-          npm test
-          npm run testnodeconsumer
-
-      - name: Production build
-        if: success()
-        run: npx grunt prod --msg=""
-
-      - name: Generate sitemap
-        run: npx grunt exec:sitemap
-
-      - name: UI tests
-        if: success()
-        run: |
-          sudo apt-get install -y xvfb
-          xvfb-run --server-args="-screen 0 1200x800x24" npx grunt testui
-
-      - name: Prepare for GitHub Pages
-        if: success()
-        run: npx grunt copy:ghPages
-
-      - name: Upload Pages artifact
-        if: success()
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./build/prod
-
-      - name: Deploy to GitHub Pages
-        if: success()
-        uses: actions/deploy-pages@v4
+        run: echo "[Error] Sync failed. This might be due to change in upstream workflow file, merge conflicts. Check logs and consider manual sync.
